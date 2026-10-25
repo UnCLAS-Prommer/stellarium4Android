@@ -59,8 +59,10 @@
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QStorageInfo>
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_ANDROID)
 	#include <QPinchGesture>
+#endif
+#ifdef Q_OS_WIN
 	#include <Windows.h>
 	#include <WinUser.h>
 #endif
@@ -696,6 +698,12 @@ StelMainView::StelMainView(QSettings* settings)
 	QSurfaceFormat glFormat = getDesiredGLFormat(configuration);
 	glWidget = new StelGLWidget(glFormat, this);
 	setViewport(glWidget);
+#ifdef Q_OS_ANDROID
+	// Qt only asks the window's top-level widget about gestures (the touch events
+	// are propagated to child widgets without consulting the gesture manager),
+	// so the pinch must be grabbed on the view itself, not on the viewport.
+	grabGesture(Qt::PinchGesture);
+#endif
 
 	stelScene = new StelGraphicsScene(this);
 	setScene(stelScene);
@@ -735,6 +743,17 @@ void StelMainView::resizeEvent(QResizeEvent* event)
 	QGraphicsView::resizeEvent(event);
 }
 
+bool StelMainView::event(QEvent* e)
+{
+#ifdef Q_OS_ANDROID
+	// A pinch grabbed on this widget arrives here; QGraphicsView::viewportEvent()
+	// would swallow it if it went to the viewport instead.
+	if (e->type() == QEvent::Gesture)
+		return handlePinchGesture(static_cast<QGestureEvent*>(e));
+#endif
+	return QGraphicsView::event(e);
+}
+
 bool StelMainView::eventFilter(QObject *obj, QEvent *event)
 {
 	if(event->type() == QEvent::FileOpen)
@@ -744,6 +763,26 @@ bool StelMainView::eventFilter(QObject *obj, QEvent *event)
 		qApp->setProperty("onetime_startup_script", openEvent->file());
 	}
 	return QGraphicsView::eventFilter(obj, event);
+}
+
+//! Handle a pinch gesture recognised on this view (Android touch screens).
+bool StelMainView::handlePinchGesture(QGestureEvent* event)
+{
+	QGesture* gesture = event->gesture(Qt::PinchGesture);
+	if (!gesture)
+		return false;
+
+	QPinchGesture* pinch = static_cast<QPinchGesture*>(gesture);
+	if (pinch->changeFlags() & QPinchGesture::ScaleFactorChanged)
+	{
+		const qreal zoom = pinch->scaleFactor();
+		if (zoom < 2 && zoom > 0.5)
+		{
+			StelApp::getInstance().handlePinch(zoom, true);
+			thereWasAnEvent();
+		}
+	}
+	return true;
 }
 
 void StelMainView::mouseMoveEvent(QMouseEvent *event)

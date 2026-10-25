@@ -39,6 +39,7 @@ class QResizeEvent;
 class StelGuiBase;
 class QMoveEvent;
 class QSettings;
+class QGestureEvent;
 
 //! @class StelMainView
 //! Reimplement a QGraphicsView for Stellarium.
@@ -236,7 +237,13 @@ public slots:
 	//! Get the sky background color. (Actually retrieves from the StelRootItem.)  Everything else than black creates a work of art!
 	Vec3f getSkyBackgroundColor() const;
 
+	//! Handle a pinch gesture recognised on this view (Android touch screens).
+	bool handlePinchGesture(QGestureEvent* event);
+
 protected:
+	//! Intercept gesture events of the top-level widget (pinch on touch screens).
+	bool event(QEvent* event) override;
+
 	//! Hack to determine current monitor pixel ratio
 	//! @todo Find a better way to handle this
 	void moveEvent(QMoveEvent* event) override;
