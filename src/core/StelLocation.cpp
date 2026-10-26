@@ -46,6 +46,7 @@ StelLocation::StelLocation(const QString &lName, const QString &lState, const QS
 	, state(lState)
 	, planetName(plName)
 	, altitude(alt)
+	, hasAltitude(true)
 	, lightPollutionLuminance(StelCore::bortleScaleIndexToLuminance(bortleIndex))
 	, landscapeKey(landscapeID)
 	, population(populationK)

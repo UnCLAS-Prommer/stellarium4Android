@@ -941,7 +941,7 @@ void LocationDialog::gpsReturn(bool success)
 		updateTimeZoneControls(true);
 		StelLocation loc=core->getCurrentLocation();
 		setFieldsFromLocation(loc);
-		if (loc.altitude==0) // give feedback of fix quality.
+		if (!loc.hasAltitude) // 2D fix: no altitude was delivered (e.g. network based location)
 		{
 			ui->gpsToolButton->setText(QString("%1 %2").arg(q_("2D location fix")).arg(gpsCount));
 			ui->gpsToolButton->setStyleSheet(QString("QToolButton{ background: yellow; }"));

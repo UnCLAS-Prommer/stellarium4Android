@@ -31,7 +31,7 @@ class Planet;
 class StelLocation
 {
 public:
-	StelLocation() : altitude(0), population(0), role('!'), isUserLocation(true), longitude(0.f), latitude(0.f) {}
+	StelLocation() : altitude(0), hasAltitude(false), population(0), role('!'), isUserLocation(true), longitude(0.f), latitude(0.f) {}
 	//! constructors for ad-hoc locations. The shorter version is only for earth locations
 	//! @arg lName location name
 	//! @arg lState may be usedful if region has more than one such name
@@ -89,6 +89,9 @@ public:
 	QString planetName;
 	//! Altitude in meter
 	int altitude;
+	//! True if #altitude holds a measured value (e.g. a 3D GNSS fix), false if it is unknown.
+	//! Do not use "altitude==0" to test this: sea level is a valid altitude.
+	bool hasAltitude;
 	//! Zenith luminance at moonless night as could be measured by a Sky Quality Meter, in cd/m²
 	QVariant lightPollutionLuminance;
 	//! A hint for associating a landscape to the location

@@ -220,6 +220,7 @@ void LibGPSLookupHelper::query()
 	qCDebug(GPS) << "GPSD location" << QString("lat %1, long %2, alt %3").arg(loc.getLatitude()).arg(loc.getLongitude()).arg(loc.altitude);
 
 	loc.role = 'X';
+	loc.hasAltitude = (fixmode >= 3); // only a 3D fix carries an altitude
 	emit queryFinished(loc);
 }
 
@@ -373,6 +374,7 @@ void NMEALookupHelper::nmeaUpdated(const QGeoPositionInfo &update)
 		loc.setLatitude(static_cast<float>(coord.latitude()));
 		// 2D fix may have only long/lat, invalid altitude.
 		loc.altitude=( qIsNaN(coord.altitude()) ? 0 : static_cast<int>(std::floor(coord.altitude())));
+		loc.hasAltitude = (coord.type() == QGeoCoordinate::Coordinate3D) && !qIsNaN(coord.altitude());
 		loc.role='X';
 		emit queryFinished(loc);
 	}
@@ -943,20 +945,28 @@ bool StelLocationMgr::deleteUserLocation(const QString& id)
 // lookup location from OS location service or IP address.
 void StelLocationMgr::locationFromIP()
 {
-	// TODO: Find out how to properly setup geoclue2 on Linux, then reactivate.
-#ifdef Q_OS_WIN
+	auto doIpLookup = [this]()
+	{
+		// OLD METHOD
+		qCDebug(LocIP) << "no permission or no QGeoPositionInfoSource, doing freegeoIP service lookup for location";
+
+		QSettings* conf = StelApp::getInstance().getSettings();
+		QNetworkRequest req( QUrl( conf->value("main/geoip_api_url", "https://freegeoip.stellarium.org/json/").toString() ) );
+		req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
+		req.setRawHeader("User-Agent", StelUtils::getUserAgentString().toLatin1());
+		QNetworkReply* networkReply=StelApp::getInstance().getNetworkAccessManager()->get(req);
+		connect(networkReply, &QNetworkReply::finished, this, &StelLocationMgr::changeLocationFromNetworkLookup);
+	};
+
+	// TODO: Find out how to properly setup geoclue2 on Linux, then reactivate there as well.
+#if defined(Q_OS_WIN) || defined(Q_OS_ANDROID)
 #if (QT_VERSION>=QT_VERSION_CHECK(6,6,0))
+	// Windows and Android both expose a permission-gated OS positioning service
+	// (Android: ACCESS_FINE_LOCATION, which must be requested at runtime).
 	QLocationPermission locationPermission;
 	// Try to get high-precision location first
 	locationPermission.setAccuracy(QLocationPermission::Precise);
-	qApp->requestPermission(locationPermission, [&locationPermission](const QPermission &permission) {
-		if (permission.status() == Qt::PermissionStatus::Denied)
-		{
-			// Fall back to configure low-precision
-			locationPermission.setAccuracy(QLocationPermission::Approximate);
-		}
-	});
-	qApp->requestPermission(locationPermission, [this](const QPermission &permission) {
+	qApp->requestPermission(locationPermission, this, [this, doIpLookup](const QPermission &permission) {
 		if ((permission.status() == Qt::PermissionStatus::Granted)
 				&& qGeoPositionInfoSource
 				&& (qGeoPositionInfoSource->supportedPositioningMethods() & QGeoPositionInfoSource::AllPositioningMethods))
@@ -969,32 +979,22 @@ void StelLocationMgr::locationFromIP()
 			qGeoPositionInfoSource->requestUpdate();
 			qCDebug(LocIP) << "permission granted, doing OS service lookup for location... postRequest ";
 		}
+		else
+			doIpLookup();
+	});
 #else
-	if (qGeoPositionInfoSource  && (qGeoPositionInfoSource->supportedPositioningMethods() & QGeoPositionInfoSource::AllPositioningMethods))
+	// Qt < 6.6 has no QPermissions API: try the OS service without asking.
+	if (qGeoPositionInfoSource && (qGeoPositionInfoSource->supportedPositioningMethods() & QGeoPositionInfoSource::AllPositioningMethods))
 	{
 		qCDebug(LocIP) << "Doing OS service lookup for location...";
-		// Trigger the actual Qt Location lookup from OS
 		qGeoPositionInfoSource->requestUpdate();
 		qCDebug(LocIP) << "Doing OS service lookup for location... postRequest ";
 	}
-#endif
 	else
-	{
+		doIpLookup();
 #endif
-		// OLD METHOD
-		qCDebug(LocIP) << "permission not granted or no QGeoPositionInfoSource, doing freegeoIP service lookup for location";
-
-		QSettings* conf = StelApp::getInstance().getSettings();
-		QNetworkRequest req( QUrl( conf->value("main/geoip_api_url", "https://freegeoip.stellarium.org/json/").toString() ) );
-		req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
-		req.setRawHeader("User-Agent", StelUtils::getUserAgentString().toLatin1());
-		QNetworkReply* networkReply=StelApp::getInstance().getNetworkAccessManager()->get(req);
-		connect(networkReply, &QNetworkReply::finished, this, &StelLocationMgr::changeLocationFromNetworkLookup);
-#ifdef Q_OS_WIN
-	}
-#if (QT_VERSION>=QT_VERSION_CHECK(6,6,0))
-});
-#endif
+#else
+	doIpLookup();
 #endif
 }
 
@@ -1013,6 +1013,7 @@ void StelLocationMgr::positionUpdatedFromOS(const QGeoPositionInfo &info)
         loc.setLatitude  (static_cast<float>(gCoord.latitude()));
         loc.setLongitude (static_cast<float>(gCoord.longitude()));
         loc.altitude = gCoord.type() == QGeoCoordinate::Coordinate3D ? int(gCoord.altitude()) : 0;
+        loc.hasAltitude = (gCoord.type() == QGeoCoordinate::Coordinate3D);
         loc.name    = (QString("%1%2, %3%4").arg(gCoord.latitude() <0 ? "S" : "N", QString::number(gCoord.latitude(), 'g', 6),
                                                  gCoord.longitude()<0 ? "W" : "E", QString::number(fabs(gCoord.longitude()), 'g', 6)));
         loc.role    = 'X'; // User-defined
@@ -1040,6 +1041,39 @@ void StelLocationMgr::positionUpdatedFromOS(const QGeoPositionInfo &info)
 #ifdef ENABLE_GPS
 void StelLocationMgr::locationFromGPS(int interval)
 {
+#if defined(Q_OS_ANDROID)
+#if (QT_VERSION>=QT_VERSION_CHECK(6,6,0))
+	// Qt's Android positioning backend needs ACCESS_FINE_LOCATION at runtime.
+	// Without an explicit request a freshly installed app never receives a fix,
+	// so ask the user/OS before touching QGeoPositionInfoSource.
+	if (interval != 0)
+	{
+		QLocationPermission locationPermission;
+		locationPermission.setAccuracy(QLocationPermission::Precise);
+		const Qt::PermissionStatus status = qApp->checkPermission(locationPermission);
+		if (status == Qt::PermissionStatus::Undetermined)
+		{
+			qCDebug(GPS) << "Requesting location permission...";
+			qApp->requestPermission(locationPermission, this, [this, interval](const QPermission &permission) {
+				if (permission.status() == Qt::PermissionStatus::Granted)
+					locationFromGPS(interval);
+				else
+				{
+					qCWarning(GPS) << "Location permission denied by user.";
+					emit gpsQueryFinished(false);
+				}
+			});
+			return;
+		}
+		if (status == Qt::PermissionStatus::Denied)
+		{
+			qCWarning(GPS) << "Location permission denied. Enable it in the system settings.";
+			emit gpsQueryFinished(false);
+			return;
+		}
+	}
+#endif
+#endif
 #ifdef ENABLE_LIBGPS
 	if(!libGpsHelper)
 	{
@@ -1153,13 +1187,21 @@ void StelLocationMgr::locationFromGPS(int interval)
 // uwes-ufo's new solution for QtPosition
 void StelLocationMgr::positionUpdated(QGeoPositionInfo info)
 {
+	// Plain qDebug (not qCDebug(GPS)) so the delivered fix is visible in logcat/console:
+	// a 2D fix (network provider) carries no altitude, only GNSS gives a 3D fix.
+	qDebug() << "GPS position received:" << info;
 	StelLocation loc;
 	if (info.isValid())
 	{
-		loc.setLongitude(info.coordinate().longitude());
-		loc.setLatitude(info.coordinate().latitude());
-		double a = info.coordinate().altitude();
-		loc.altitude = qIsNaN(a) ? 0 : qRound(a);
+		const QGeoCoordinate coord = info.coordinate();
+		loc.setLongitude(coord.longitude());
+		loc.setLatitude(coord.latitude());
+		// QGeoCoordinate::altitude() is 0 for 2D coordinates, so check the type instead
+		// of testing for NaN: otherwise an unknown altitude looks like "0 m".
+		loc.hasAltitude = (coord.type() == QGeoCoordinate::Coordinate3D);
+		loc.altitude = loc.hasAltitude ? qRound(coord.altitude()) : 0;
+		if (!loc.hasAltitude)
+			qCDebug(GPS) << "2D fix (no altitude), e.g. network-based location.";
 		loc.role='X';
 		changeLocationFromGPSQuery(loc);
 	}
@@ -1186,9 +1228,10 @@ void StelLocationMgr::changeLocationFromGPSQuery(const StelLocation &locin)
 	loc.ianaTimeZone=core->getCurrentTimeZone();
 	loc.isUserLocation=true;
 	loc.planetName="Earth";
+	// Keep two decimals: rounded whole degrees may be off by >50 km and look wrong in the GUI.
 	loc.name=QString("GPS %1%2 %3%4")
-		.arg(latitude<0.f?"S":"N").arg(qRound(qAbs(latitude)))
-		.arg(longitude<0.f?"W":"E").arg(qRound(qAbs(longitude)));
+		.arg(latitude<0.f?"S":"N").arg(QString::number(qAbs(latitude), 'f', 2))
+		.arg(longitude<0.f?"W":"E").arg(QString::number(qAbs(longitude), 'f', 2));
 	LandscapeMgr *lMgr=GETSTELMODULE(LandscapeMgr);
 	QString landscapeAutoName;
 	if (lMgr->getFlagLandscapeAutoSelection())
