@@ -559,6 +559,12 @@ IF(ENABLE_GPS OR USE_PLUGIN_TELESCOPECONTROL)
      SET(STELLARIUM_QT_LIBRARIES ${STELLARIUM_QT_LIBRARIES} Qt${QT_VERSION_MAJOR}::SerialPort)
 ENDIF()
 
+IF(ANDROID AND TARGET Qt${QT_VERSION_MAJOR}::CorePrivate)
+     # main.cpp uses QtAndroidPrivate (QtCore private headers) to request
+     # MANAGE_EXTERNAL_STORAGE; linking CorePrivate provides the include path.
+     SET(STELLARIUM_QT_LIBRARIES ${STELLARIUM_QT_LIBRARIES} Qt${QT_VERSION_MAJOR}::CorePrivate)
+ENDIF()
+
 IF(ENABLE_SPOUT AND SPOUT_LIBRARY_DLL)
      # automatically copy the spout .dll to the binary directory, if possible
      CONFIGURE_FILE(${SPOUT_LIBRARY_DLL} ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)

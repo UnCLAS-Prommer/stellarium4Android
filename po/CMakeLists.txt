@@ -37,7 +37,11 @@ IF(NOT MSVC)
      ENDIF()
 ENDIF()
 
-FIND_PACKAGE(Qt${QT_VERSION_MAJOR}LinguistTools REQUIRED)
+# Ask for LinguistTools as a Qt component: on cross-compiled builds (e.g. Android)
+# the host tools (lupdate/lconvert) live in QT_HOST_PATH and are only resolved
+# through Qt6Config's component handling. A plain find_package(Qt6LinguistTools)
+# would search the target prefix only and fail.
+FIND_PACKAGE(Qt${QT_VERSION_MAJOR} COMPONENTS LinguistTools REQUIRED)
 GET_TARGET_PROPERTY(lupdate_executable Qt${QT_VERSION_MAJOR}::lupdate IMPORTED_LOCATION)
 IF(EXISTS "${lupdate_executable}")
      MESSAGE(STATUS "Found lupdate: ${lupdate_executable}")
