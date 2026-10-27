@@ -62,6 +62,9 @@
 #if defined(Q_OS_WIN) || defined(Q_OS_ANDROID)
 	#include <QPinchGesture>
 #endif
+#ifdef Q_OS_ANDROID
+	#include <QJniObject>
+#endif
 #ifdef Q_OS_WIN
 	#include <Windows.h>
 	#include <WinUser.h>
@@ -750,9 +753,91 @@ bool StelMainView::event(QEvent* e)
 	// would swallow it if it went to the viewport instead.
 	if (e->type() == QEvent::Gesture)
 		return handlePinchGesture(static_cast<QGestureEvent*>(e));
+	// Keep the app truly fullscreen. Qt's Android integration applies its own
+	// window flags right after the window has been shown, which brings the system
+	// bars back, so the immersive mode is re-applied slightly later as well.
+	if (e->type() == QEvent::Show || e->type() == QEvent::WindowActivate || e->type() == QEvent::Resize)
+	{
+		applyAndroidImmersiveMode();
+		if (e->type() != QEvent::Resize)
+		{
+			// Qt applies its own window flags right after the window is shown,
+			// which brings the bars back. Retry a bit later to win that race.
+			QTimer::singleShot(300, this, &StelMainView::applyAndroidImmersiveMode);
+			QTimer::singleShot(1200, this, &StelMainView::applyAndroidImmersiveMode);
+		}
+	}
 #endif
 	return QGraphicsView::event(e);
 }
+
+#ifdef Q_OS_ANDROID
+//! Switch the Android activity into immersive fullscreen mode.
+//! This hides the status bar and the navigation bar (they can still be swiped in
+//! temporarily) and lets the window cover the whole display.
+void StelMainView::applyAndroidImmersiveMode()
+{
+	const QJniObject activity = QNativeInterface::QAndroidApplication::context();
+	if (!activity.isValid())
+	{
+		qWarning() << "Immersive: no activity";
+		return;
+	}
+	const QJniObject window = activity.callObjectMethod("getWindow", "()Landroid/view/Window;");
+	if (!window.isValid())
+	{
+		qWarning() << "Immersive: no window";
+		return;
+	}
+
+	const int sdkVersion = QNativeInterface::QAndroidApplication::sdkVersion();
+
+	// Let the window extend into the display cutout (notch) area. This must only be
+	// done once: setAttributes() triggers a window relayout, which would otherwise
+	// feed back into this function through Resize events.
+	static bool cutoutApplied = false;
+	if (!cutoutApplied && sdkVersion >= 28)
+	{
+		cutoutApplied = true;
+		QJniObject params = window.callObjectMethod("getAttributes", "()Landroid/view/WindowManager$LayoutParams;");
+		if (params.isValid())
+		{
+			constexpr jint shortEdges = 1; // WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+			params.setField<jint>("layoutInDisplayCutoutMode", shortEdges);
+			window.callMethod<void>("setAttributes", "(Landroid/view/WindowManager$LayoutParams;)V", params.object());
+		}
+	}
+
+	// Preferred API since Android 11: hide all system bars, a swipe shows them transiently.
+	if (sdkVersion >= 30)
+	{
+		const QJniObject controller = window.callObjectMethod("getInsetsController", "()Landroid/view/WindowInsetsController;");
+		if (controller.isValid())
+		{
+			constexpr jint systemBars = 0x7; // WindowInsets.Type.systemBars()
+			controller.callMethod<void>("hide", "(I)V", systemBars);
+			constexpr jint showTransientBarsBySwipe = 2; // WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+			controller.callMethod<void>("setSystemBarsBehavior", "(I)V", showTransientBarsBySwipe);
+			return;
+		}
+	}
+
+	// Legacy API (Android 9/10 and a fallback for the code above).
+	const QJniObject decorView = window.callObjectMethod("getDecorView", "()Landroid/view/View;");
+	if (!decorView.isValid())
+	{
+		qWarning() << "Immersive: no decor view";
+		return;
+	}
+	constexpr jint flags = 0x00000004 // View.SYSTEM_UI_FLAG_FULLSCREEN
+	                     | 0x00000100 // View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+	                     | 0x00000200 // View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+	                     | 0x00000400 // View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+	                     | 0x00000002 // View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+	                     | 0x00001000; // View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+	decorView.callMethod<void>("setSystemUiVisibility", "(I)V", flags);
+}
+#endif
 
 bool StelMainView::eventFilter(QObject *obj, QEvent *event)
 {

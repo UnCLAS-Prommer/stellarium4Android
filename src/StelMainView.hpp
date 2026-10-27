@@ -240,6 +240,13 @@ public slots:
 	//! Handle a pinch gesture recognised on this view (Android touch screens).
 	bool handlePinchGesture(QGestureEvent* event);
 
+#ifdef Q_OS_ANDROID
+	//! Hide the Android status/navigation bars and let the window use the whole
+	//! display, including the area around a display cutout (notch).
+	//! Safe to call repeatedly.
+	static void applyAndroidImmersiveMode();
+#endif
+
 protected:
 	//! Intercept gesture events of the top-level widget (pinch on touch screens).
 	bool event(QEvent* event) override;
